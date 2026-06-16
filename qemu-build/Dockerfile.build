@@ -1,0 +1,134 @@
+# QEMU Cross-Compilation Build Environment
+# Builds qemu-system-arm as a static binary for aarch64 (ARM64)
+#
+# Usage:
+#   docker build -f Dockerfile.build -t qemu-builder .
+#   docker run --rm -v $(pwd)/output:/output qemu-builder
+#
+# Output: /output/qemu-system-arm (static binary)
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    pkg-config \
+    python3 \
+    python3-pip \
+    ninja-build \
+    meson \
+    git \
+    wget \
+    automake \
+    autoconf \
+    libtool \
+    texinfo \
+    flex \
+    bison \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set cross-compilation environment
+ENV CROSS_COMPILE=aarch64-linux-gnu-
+ENV CC=aarch64-linux-gnu-gcc
+ENV CXX=aarch64-linux-gnu-g++
+ENV AR=aarch64-linux-gnu-ar
+ENV STRIP=aarch64-linux-gnu-strip
+ENV RANLIB=aarch64-linux-gnu-ranlib
+ENV PKG_CONFIG_PATH=/opt/cross/lib/pkgconfig
+
+WORKDIR /build
+
+# ---- Build static dependencies ----
+
+# 1. Build zlib (static)
+RUN wget -q https://zlib.net/zlib-1.3.1.tar.gz && \
+    tar xzf zlib-1.3.1.tar.gz && \
+    cd zlib-1.3.1 && \
+    CC=aarch64-linux-gnu-gcc ./configure --prefix=/opt/cross --static && \
+    make -j$(nproc) && make install && \
+    cd .. && rm -rf zlib-1.3.1*
+
+# 2. Build libffi (static)
+RUN wget -q https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz && \
+    tar xzf libffi-3.4.6.tar.gz && \
+    cd libffi-3.4.6 && \
+    ./configure --host=aarch64-linux-gnu --prefix=/opt/cross \
+        --enable-static --disable-shared && \
+    make -j$(nproc) && make install && \
+    cd .. && rm -rf libffi-3.4.6*
+
+# 3. Build glib (static, minimal)
+RUN wget -q https://download.gnome.org/sources/glib/2.78/glib-2.78.4.tar.xz && \
+    tar xf glib-2.78.4.tar.xz && \
+    cd glib-2.78.4 && \
+    meson setup build \
+        --cross-file=/build/cross-aarch64.txt \
+        --prefix=/opt/cross \
+        --default-library=static \
+        -Dtests=false -Dlibmount=disabled -Dselinux=disabled \
+        -Dxattr=false -Dsysprof=disabled -Dglib_assert=false \
+        -Dglib_checks=false && \
+    meson compile -C build && \
+    meson install -C build && \
+    cd .. && rm -rf glib-2.78.4*
+
+# 4. Build pixman (static)
+RUN wget -q https://cairographics.org/releases/pixman-0.43.4.tar.gz && \
+    tar xzf pixman-0.43.4.tar.gz && \
+    cd pixman-0.43.4 && \
+    meson setup build \
+        --cross-file=/build/cross-aarch64.txt \
+        --prefix=/opt/cross \
+        --default-library=static \
+        -Dtests=disabled && \
+    meson compile -C build && \
+    meson install -C build && \
+    cd .. && rm -rf pixman-0.43.4*
+
+# 5. Build libslirp (static)
+RUN git clone --depth 1 https://gitlab.freedesktop.org/slirp/libslirp.git && \
+    cd libslirp && \
+    meson setup build \
+        --cross-file=/build/cross-aarch64.txt \
+        --prefix=/opt/cross \
+        --default-library=static && \
+    meson compile -C build && \
+    meson install -C build && \
+    cd .. && rm -rf libslirp
+
+# ---- Build QEMU ----
+
+# Clone and build QEMU (arm-softmmu target only)
+RUN git clone --depth 1 --branch v9.2.0 https://gitlab.com/qemu-project/qemu.git && \
+    cd qemu && \
+    ./configure \
+        --cross-prefix=aarch64-linux-gnu- \
+        --target-list=arm-softmmu \
+        --prefix=/opt/qemu \
+        --static \
+        --enable-slirp \
+        --enable-vnc \
+        --disable-docs \
+        --disable-sdl \
+        --disable-gtk \
+        --disable-opengl \
+        --disable-spice \
+        --disable-usb-redir \
+        --disable-libusb \
+        --disable-smartcard \
+        --disable-guest-agent \
+        --disable-werror \
+        --extra-cflags="-I/opt/cross/include" \
+        --extra-ldflags="-L/opt/cross/lib" && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf qemu
+
+# ---- Copy output ----
+COPY build_qemu.sh /build/
+
+CMD ["/build/build_qemu.sh"]

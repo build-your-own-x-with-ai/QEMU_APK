@@ -1,0 +1,46 @@
+# Built files
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# App build
+/app/build
+/app/release
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Guest images (large binary files)
+*.img
+*.qcow2
+*.zImage
+*.dtb
+app/src/main/assets/guest/
+
+# QEMU build artifacts
+qemu-build/output/
+qemu-build/qemu/
+
+# Downloaded binary assets (too large for GitHub)
+app/src/main/assets/proot/proot
+app/src/main/assets/alpine/*.tar.gz
+app/src/main/assets/qemu/*
+!app/src/main/assets/*/.gitkeep
+scripts/temp-downloads/
+
+# IDE
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

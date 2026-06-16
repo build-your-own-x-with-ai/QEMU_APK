@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Green background circle -->
+    <path
+        android:fillColor="#1B5E20"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0" />
+    <!-- QEMU "Q" letter -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30 C42,30 32,40 32,54 C32,68 42,78 54,78 C62,78 68,74 72,68 L76,72 L80,68 L76,64 C78,60 80,56 80,54 C80,40 68,30 54,30 Z M54,38 C64,38 72,44 72,54 C72,56 71,58 70,60 L60,50 L56,54 L66,64 C64,68 58,70 54,70 C44,70 38,64 38,54 C38,44 46,38 54,38 Z" />
+</vector>
