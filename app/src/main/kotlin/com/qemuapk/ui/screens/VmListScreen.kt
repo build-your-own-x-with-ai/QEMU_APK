@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -50,6 +51,8 @@ import com.qemuapk.vm.VmState
 @Composable
 fun VmListScreen(
     vmInstances: List<VmInstance>,
+    imagesReady: Boolean,
+    onDownloadImages: (onProgress: (Int, String, Long, Long) -> Unit) -> Unit,
     onCreateVm: (VmConfig) -> Unit,
     onStartVm: (VmInstance) -> Unit,
     onStopVm: (VmInstance) -> Unit,
@@ -58,6 +61,9 @@ fun VmListScreen(
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var vmToDelete by remember { mutableStateOf<VmInstance?>(null) }
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+    var downloadFileName by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -78,16 +84,38 @@ fun VmListScreen(
             )
         }
     ) { paddingValues ->
-        if (vmInstances.isEmpty()) {
-            EmptyState(modifier = Modifier.padding(paddingValues))
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Image download card (shown when images not ready)
+            if (!imagesReady) {
+                item {
+                    ImageDownloadCard(
+                        isDownloading = isDownloading,
+                        progress = downloadProgress,
+                        currentFile = downloadFileName,
+                        onDownload = {
+                            isDownloading = true
+                            onDownloadImages { percent, fileName, _, _ ->
+                                downloadProgress = percent
+                                downloadFileName = fileName
+                                if (percent >= 100) {
+                                    isDownloading = false
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+
+            // VM list
+            if (vmInstances.isEmpty()) {
+                item { EmptyState() }
+            } else {
                 items(vmInstances, key = { it.config.id }) { instance ->
                     VmCard(
                         instance = instance,
@@ -147,10 +175,69 @@ private fun EmptyState(modifier: Modifier = Modifier) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Create a VM to run ARM32 Android apps",
+                text = "Create a VM to run ARM32 apps",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+private fun ImageDownloadCard(
+    isDownloading: Boolean,
+    progress: Int,
+    currentFile: String,
+    onDownload: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "System Images Required",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Download the ARM32 kernel and rootfs before creating a VM (~16 MB).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (isDownloading) {
+                // Progress display
+                LinearProgressIndicator(
+                    progress = progress / 100f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = currentFile,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "$progress%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            } else {
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = onDownload,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Download System Images")
+                }
+            }
         }
     }
 }

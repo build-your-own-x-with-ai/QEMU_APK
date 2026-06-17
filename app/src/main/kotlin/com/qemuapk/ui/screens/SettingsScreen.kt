@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Divider
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +34,10 @@ import com.qemuapk.qemu.KvmDetector
 fun SettingsScreen(
     onBack: () -> Unit,
     onSetupEnvironment: () -> Unit,
-    isSetupComplete: Boolean
+    onDownloadImages: () -> Unit,
+    isSetupComplete: Boolean,
+    imagesReady: Boolean,
+    imageStatuses: Map<String, Any>
 ) {
     Scaffold(
         topBar = {
@@ -60,6 +64,17 @@ fun SettingsScreen(
             EnvironmentStatus(
                 isSetupComplete = isSetupComplete,
                 onSetup = onSetupEnvironment
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Divider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // System images section
+            SectionHeader("System Images")
+            SystemImagesStatus(
+                imagesReady = imagesReady,
+                onDownload = onDownloadImages
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -121,6 +136,33 @@ private fun EnvironmentStatus(isSetupComplete: Boolean, onSetup: () -> Unit) {
             Spacer(modifier = Modifier.height(12.dp))
             androidx.compose.material3.FilledTonalButton(onClick = onSetup) {
                 Text("Run Setup")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemImagesStatus(imagesReady: Boolean, onDownload: () -> Unit) {
+    Column {
+        Text(
+            text = if (imagesReady) "Images: Downloaded" else "Images: Not Downloaded",
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = if (imagesReady) {
+                "ARM32 kernel, initrd, and Alpine rootfs are ready."
+            } else {
+                "Guest OS images (kernel + rootfs, ~16 MB) need to be downloaded before VMs can start."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (!imagesReady) {
+            Spacer(modifier = Modifier.height(12.dp))
+            FilledTonalButton(onClick = onDownload) {
+                Text("Download Images")
             }
         }
     }

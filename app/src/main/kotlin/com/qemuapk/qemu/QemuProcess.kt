@@ -182,22 +182,22 @@ class QemuProcess(
             builder.accel("kvm")
         }
 
-        // Kernel and boot
-        builder.kernel(config.kernelPath)
+        // Kernel and boot — translate paths to proot-visible paths
+        builder.kernel(translateToProotPath(config.kernelPath))
         if (config.initrdPath.isNotEmpty()) {
-            builder.initrd(config.initrdPath)
+            builder.initrd(translateToProotPath(config.initrdPath))
         }
         builder.append(config.bootArgs)
 
         // Disk images
         if (config.systemImagePath.isNotEmpty()) {
-            builder.drive(config.systemImagePath, format = "raw", ifType = "virtio", readonly = true)
+            builder.drive(translateToProotPath(config.systemImagePath), format = "raw", ifType = "virtio", readonly = true)
         }
         if (config.userdataImagePath.isNotEmpty()) {
-            builder.drive(config.userdataImagePath, format = "qcow2", ifType = "virtio")
+            builder.drive(translateToProotPath(config.userdataImagePath), format = "qcow2", ifType = "virtio")
         }
         if (config.cacheImagePath.isNotEmpty()) {
-            builder.drive(config.cacheImagePath, format = "raw", ifType = "virtio")
+            builder.drive(translateToProotPath(config.cacheImagePath), format = "raw", ifType = "virtio")
         }
 
         // Display
@@ -219,7 +219,7 @@ class QemuProcess(
 
         // Shared folder
         if (config.sharedFolderPath.isNotEmpty()) {
-            builder.sharedFolder(config.sharedFolderPath)
+            builder.sharedFolder(translateToProotPath(config.sharedFolderPath))
         }
 
         // Misc
@@ -227,6 +227,44 @@ class QemuProcess(
         builder.serial("mon:stdio")
 
         return builder.build()
+    }
+
+    /**
+     * Translate a host filesystem path to the equivalent path inside the proot environment.
+     *
+     * Inside proot:
+     * - filesDir is bind-mounted at /mnt/app
+     * - imageDir (filesDir/images) is bind-mounted at /mnt/images
+     *
+     * Host path: /data/data/com.qemuapk/files/images/zImage
+     * Proot path: /mnt/images/zImage
+     */
+    private fun translateToProotPath(hostPath: String): String {
+        if (hostPath.isEmpty()) return hostPath
+
+        val file = java.io.File(hostPath)
+        val fileName = file.name
+
+        // Images directory is bind-mounted at /mnt/images
+        val imagesDirSuffix = "images"
+        val imagesIndex = hostPath.lastIndexOf("/$imagesDirSuffix/")
+        if (imagesIndex >= 0) {
+            // Everything after the images/ directory
+            val relativePath = hostPath.substring(imagesIndex + imagesDirSuffix.length + 1)
+            return "/mnt/images/$relativePath"
+        }
+
+        // App files directory is bind-mounted at /mnt/app
+        val filesDirSuffix = "files/"
+        val filesIndex = hostPath.lastIndexOf(filesDirSuffix)
+        if (filesIndex >= 0) {
+            val relativePath = hostPath.substring(filesIndex + filesDirSuffix.length)
+            return "/mnt/app/$relativePath"
+        }
+
+        // Fallback: just use the filename in /mnt/images/
+        Log.w(TAG, "Could not translate path, using /mnt/images/$fileName")
+        return "/mnt/images/$fileName"
     }
 
     private fun startOutputCapture() {

@@ -1,0 +1,246 @@
+name: Build ARM32 Kernel for QEMU virt
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'Kernel branch to build'
+        required: true
+        default: 'android12-5.10'
+      release_tag:
+        description: 'Release tag for artifacts'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Install cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            bc bison flex libssl-dev make cpio gzip
+
+      - name: Checkout kernel source
+        run: |
+          git clone --depth=1 --branch=${{ inputs.kernel_branch }} \
+            https://android.googlesource.com/kernel/common kernel
+        timeout-minutes: 10
+
+      - name: Apply config
+        working-directory: kernel
+        run: |
+          # Start with virt_defconfig as base
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- virt_defconfig
+
+          # Append Android-specific configs
+          cat >> .config << 'EOF'
+          # Virtio devices
+          CONFIG_VIRTIO=y
+          CONFIG_VIRTIO_PCI=y
+          CONFIG_VIRTIO_PCI_LEGACY=y
+          CONFIG_VIRTIO_BLK=y
+          CONFIG_VIRTIO_NET=y
+          CONFIG_VIRTIO_MMIO=y
+          CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y
+          CONFIG_VIRTIO_CONSOLE=y
+          CONFIG_VIRTIO_BALLOON=y
+          CONFIG_VIRTIO_INPUT=y
+          CONFIG_HW_RANDOM_VIRTIO=y
+
+          # GPU / Display
+          CONFIG_DRM=y
+          CONFIG_DRM_VIRTIO_GPU=y
+          CONFIG_FB=y
+          CONFIG_FRAMEBUFFER_CONSOLE=y
+          CONFIG_LOGO=y
+
+          # Android-specific
+          CONFIG_ANDROID=y
+          CONFIG_ANDROID_BINDER_IPC=y
+          CONFIG_ANDROID_BINDERFS=y
+          CONFIG_ANDROID_LOGGER=y
+          CONFIG_ASHMEM=y
+
+          # DMA-BUF
+          CONFIG_DMA_SHARED_BUFFER=y
+          CONFIG_DMABUF_HEAPS=y
+          CONFIG_DMABUF_HEAPS_SYSTEM=y
+          CONFIG_DMABUF_HEAPS_CMA=y
+
+          # Filesystems
+          CONFIG_EXT4_FS=y
+          CONFIG_EXT4_FS_POSIX_ACL=y
+          CONFIG_EXT4_FS_SECURITY=y
+          CONFIG_F2FS_FS=y
+          CONFIG_TMPFS=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_DEVTMPFS_MOUNT=y
+
+          # Networking
+          CONFIG_NET=y
+          CONFIG_INET=y
+          CONFIG_IPV6=y
+          CONFIG_NETFILTER=y
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_BRIDGE=y
+          CONFIG_NET_9P=y
+          CONFIG_9P_FS=y
+
+          # USB (for adb gadget)
+          CONFIG_USB=y
+          CONFIG_USB_CONFIGFS=y
+          CONFIG_USB_CONFIGFS_F_ADB=y
+          CONFIG_USB_GADGET=y
+
+          # Misc
+          CONFIG_BINFMT_ELF=y
+          CONFIG_BINFMT_SCRIPT=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_NAMESPACES=y
+          CONFIG_UTS_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_NET_NS=y
+          CONFIG_CGROUPS=y
+          CONFIG_CGROUP_CPUACCT=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_FAIR_GROUP_SCHED=y
+          CONFIG_IKCONFIG=y
+          CONFIG_IKCONFIG_PROC=y
+          CONFIG_PRINTK=y
+          CONFIG_MAGIC_SYSRQ=y
+          CONFIG_PANIC_TIMEOUT=-1
+          EOF
+
+          # Regenerate config to resolve dependencies
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage
+        timeout-minutes: 60
+
+      - name: Build initramfs
+        run: |
+          # Create initramfs directory structure
+          mkdir -p initramfs/{bin,dev,etc,lib,mnt,proc,sys,usr/bin,usr/sbin,var/tmp,root}
+
+          # Download static busybox for ARM
+          BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+          # Use Alpine's ARM busybox instead
+          curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/busybox-1.36.1-r29.apk" \
+            -o busybox.apk || true
+
+          # If download fails, create a minimal init script
+          # Create /init script
+          cat > initramfs/init << 'INIT'
+          #!/bin/sh
+          # Minimal init for QEMU ARM32 with virtio
+
+          # Mount essential filesystems
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t devtmpfs devtmpfs /dev
+
+          # Create essential device nodes
+          mkdir -p /dev/pts /dev/shm
+          mount -t devpts devpts /dev/pts
+          mount -t tmpfs tmpfs /dev/shm
+
+          # Wait for virtio block devices
+          sleep 2
+
+          # Find and mount root filesystem from virtio-blk device
+          # The userdata qcow2 image is mounted as a virtio block device
+          ROOTDEV=""
+          for dev in /dev/vda /dev/vdb /dev/vdc /dev/mmcblk0; do
+            if [ -b "$dev" ]; then
+              ROOTDEV="$dev"
+              break
+            fi
+          done
+
+          if [ -n "$ROOTDEV" ]; then
+            echo "Found root device: $ROOTDEV"
+            mkdir -p /mnt/root
+            mount -t ext4 "$ROOTDEV" /mnt/root 2>/dev/null || \
+            mount -t f2fs "$ROOTDEV" /mnt/root 2>/dev/null || true
+
+            if [ -f /mnt/root/sbin/init ] || [ -f /mnt/root/bin/init ]; then
+              echo "Switching to real root..."
+              exec switch_root /mnt/root /sbin/init
+            fi
+
+            # If no real init found, drop to shell in the mounted root
+            echo "=== Alpine ARM32 System Ready ==="
+            echo "Root mounted at /mnt/root"
+          fi
+
+          # Start a shell for debugging
+          echo "=== QEMU ARM32 System Booted ==="
+          echo "Kernel: $(uname -r)"
+          echo "Architecture: $(uname -m)"
+
+          # Set up networking
+          if [ -x /bin/ifconfig ] || [ -x /sbin/ifconfig ]; then
+            ifconfig eth0 up 2>/dev/null
+            udhcpc -i eth0 2>/dev/null || true
+          fi
+
+          # Drop to shell
+          exec /bin/sh
+          INIT
+          chmod +x initramfs/init
+
+          # Create symlinks for basic utilities (busybox will provide these)
+          cat > initramfs/etc/fstab << 'FSTAB'
+          # <device>  <mount>  <type>  <options>  <dump>  <pass>
+          proc        /proc    proc    defaults   0       0
+          sysfs       /sys     sysfs   defaults   0       0
+          devtmpfs    /dev     devtmpfs defaults  0       0
+          FSTAB
+
+          # Create cpio archive
+          cd initramfs && find . | cpio -H newc -o | gzip -9 > ../initrd
+          cd ..
+          ls -lh initrd
+
+      - name: Verify artifacts
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lh kernel/arch/arm/boot/zImage
+          ls -lh initrd
+          file kernel/arch/arm/boot/zImage
+          file initrd
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm32-kernel-initrd
+          path: |
+            kernel/arch/arm/boot/zImage
+            initrd
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ARM32 Kernel ${{ inputs.release_tag }}
+          files: |
+            kernel/arch/arm/boot/zImage
+            initrd
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

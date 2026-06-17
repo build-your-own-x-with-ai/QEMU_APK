@@ -1,6 +1,8 @@
 package com.qemuapk
 
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.collectAsState
@@ -38,6 +40,7 @@ class MainActivity : ComponentActivity() {
                 val vmInstances by vmManager.vmInstances.collectAsState()
                 val activeVm by vmManager.activeVm.collectAsState()
                 val isSetupComplete by vmManager.isSetupComplete.collectAsState()
+                val imagesReady by vmManager.imagesReady.collectAsState()
 
                 val scope = rememberCoroutineScope()
                 var currentScreen by remember { mutableStateOf<Screen>(Screen.VmList) }
@@ -65,18 +68,63 @@ class MainActivity : ComponentActivity() {
                             onBack = { currentScreen = Screen.VmList },
                             onSetupEnvironment = {
                                 lifecycleScope.launch {
-                                    vmManager.setupEnvironment { progress, message ->
-                                        // Progress callback
+                                    try {
+                                        vmManager.setupEnvironment { progress, message ->
+                                            // Progress callback
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Setup failed", e)
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Setup failed: ${e.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
                                     }
                                 }
                             },
-                            isSetupComplete = isSetupComplete
+                            onDownloadImages = {
+                                lifecycleScope.launch {
+                                    try {
+                                        vmManager.downloadImages()
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Images downloaded successfully",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Download failed", e)
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Download failed: ${e.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            },
+                            isSetupComplete = isSetupComplete,
+                            imagesReady = imagesReady,
+                            imageStatuses = emptyMap()
                         )
                     }
 
                     else -> {
                         VmListScreen(
                             vmInstances = vmInstances,
+                            imagesReady = imagesReady,
+                            onDownloadImages = { onProgress ->
+                                lifecycleScope.launch {
+                                    try {
+                                        vmManager.downloadImages(onProgress = onProgress)
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Download failed", e)
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Download failed: ${e.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            },
                             onCreateVm = { config ->
                                 val instance = vmManager.createVm(config)
                                 scope.launch {

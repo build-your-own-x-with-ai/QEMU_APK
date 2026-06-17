@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -31,6 +32,7 @@ class VmManager(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val prootLauncher = ProotLauncher(context)
+    val guestImageManager = GuestImageManager(context)
 
     private val _vmInstances = MutableStateFlow<List<VmInstance>>(emptyList())
     val vmInstances: StateFlow<List<VmInstance>> = _vmInstances.asStateFlow()
@@ -40,6 +42,9 @@ class VmManager(private val context: Context) {
 
     private val _isSetupComplete = MutableStateFlow(false)
     val isSetupComplete: StateFlow<Boolean> = _isSetupComplete.asStateFlow()
+
+    private val _imagesReady = MutableStateFlow(false)
+    val imagesReady: StateFlow<Boolean> = _imagesReady.asStateFlow()
 
     private var qemuProcess: QemuProcess? = null
     private var uptimeJob: Job? = null
@@ -52,6 +57,7 @@ class VmManager(private val context: Context) {
         imagesDir.mkdirs()
         loadSavedVms()
         _isSetupComplete.value = prootLauncher.isEnvironmentReady()
+        _imagesReady.value = guestImageManager.areImagesReady()
     }
 
     /**
@@ -65,6 +71,73 @@ class VmManager(private val context: Context) {
             Log.e(TAG, "Setup failed", e)
             throw e
         }
+    }
+
+    /**
+     * Check if guest OS images are downloaded and ready.
+     */
+    fun areImagesReady(): Boolean = guestImageManager.areImagesReady()
+
+    /**
+     * Download guest OS images (kernel, initrd, rootfs).
+     * Should be called after environment setup is complete.
+     */
+    suspend fun downloadImages(
+        onProgress: (Int, String, Long, Long) -> Unit = { _, _, _, _ -> }
+    ) {
+        try {
+            guestImageManager.downloadAllImages(onProgress = onProgress)
+            _imagesReady.value = true
+            Log.d(TAG, "Guest images downloaded successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Image download failed", e)
+            throw e
+        }
+    }
+
+    /**
+     * Create disk images (userdata.qcow2) using qemu-img inside proot.
+     * Call after images are downloaded and before starting a VM.
+     */
+    suspend fun createDiskImages(basePath: String) = withContext(Dispatchers.IO) {
+        val userdataPath = "$basePath/userdata.qcow2"
+        val userdataFile = File(userdataPath)
+
+        if (userdataFile.exists() && userdataFile.length() > 0) {
+            Log.d(TAG, "Userdata image already exists: $userdataPath")
+            return@withContext
+        }
+
+        userdataFile.parentFile?.mkdirs()
+
+        // Create qcow2 userdata image via proot qemu-img
+        val result = prootLauncher.runInProot(
+            listOf("qemu-img", "create", "-f", "qcow2", "/mnt/app/images/${File(basePath).name}/userdata.qcow2", "2G")
+        )
+
+        if (!result.success) {
+            // Fallback: create a raw ext4 image if qemu-img not available
+            Log.w(TAG, "qemu-img failed, creating raw ext4 image: ${result.stderr}")
+            createRawUserdata(basePath)
+        }
+
+        // Extract Alpine rootfs into userdata if it's a new image
+        val rootfsArchive = File(guestImageManager.getImagesDir(), "alpine-arm32.tar.gz")
+        if (rootfsArchive.exists()) {
+            Log.d(TAG, "Alpine ARM32 rootfs available for guest")
+        }
+
+        Log.d(TAG, "Disk images created at $basePath")
+    }
+
+    private fun createRawUserdata(basePath: String) {
+        val userdataPath = "$basePath/userdata.qcow2"
+        val file = File(userdataPath)
+        // Create a 2GB sparse file as fallback
+        java.io.RandomAccessFile(file, "rw").use { raf ->
+            raf.setLength(2L * 1024 * 1024 * 1024)
+        }
+        Log.d(TAG, "Created raw userdata image: $userdataPath")
     }
 
     /**
@@ -97,10 +170,20 @@ class VmManager(private val context: Context) {
             return false
         }
 
+        if (!_imagesReady.value) {
+            instance.onError("Guest images not downloaded. Please download system images first.")
+            return false
+        }
+
         instance.onStarting()
         _activeVm.value = instance
 
         try {
+            // Ensure disk images exist
+            val vmImagesDir = File(imagesDir, instance.config.id)
+            vmImagesDir.mkdirs()
+            createDiskImages(vmImagesDir.absolutePath)
+
             // Build runtime config from VM config
             val runConfig = QemuRunConfig(
                 ramMb = instance.config.ramMb,

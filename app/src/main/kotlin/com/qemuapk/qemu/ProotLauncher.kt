@@ -24,7 +24,7 @@ class ProotLauncher(private val context: Context) {
     companion object {
         private const val TAG = "ProotLauncher"
         private const val PROOT_ASSET = "proot/proot"
-        private const val ALPINE_ROOTFS_ASSET = "alpine/alpine-minirootfs.tar.gz"
+        private const val ALPINE_ROOTFS_ASSET = "alpine/alpine-minirootfs.tar"
         private const val PROOT_DIR = "proot_env"
         private const val ROOTFS_DIR = "rootfs"
         private const val PROOT_BINARY = "proot"
@@ -74,6 +74,10 @@ class ProotLauncher(private val context: Context) {
                 // Step 4: Set up necessary directories inside rootfs
                 onProgress(80, "Configuring environment...")
                 setupRootfsDirectories()
+
+                // Step 5: Install qemu-img into Alpine rootfs
+                onProgress(90, "Installing qemu-img...")
+                installQemuImg()
 
                 onProgress(100, "Environment ready!")
                 Log.d(TAG, "Proot environment setup complete")
@@ -170,6 +174,41 @@ class ProotLauncher(private val context: Context) {
      */
     fun getImageProotPath(): String = "/mnt/images"
 
+    /**
+     * Run a command inside the proot environment and return the result.
+     * Useful for running qemu-img or other utilities.
+     */
+    suspend fun runInProot(command: List<String>): ProotResult = withContext(Dispatchers.IO) {
+        try {
+            val prootCmd = buildProotCommand(command)
+            val process = ProcessBuilder(prootCmd)
+                .redirectErrorStream(false)
+                .start()
+
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+
+            ProotResult(
+                success = exitCode == 0,
+                stdout = stdout.trim(),
+                stderr = stderr.trim(),
+                exitCode = exitCode
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "runInProot failed for: ${command.joinToString(" ")}", e)
+            ProotResult(false, "", e.message ?: "Unknown error", -1)
+        }
+    }
+
+    /**
+     * Check if qemu-img is available in the Alpine rootfs.
+     */
+    fun isQemuImgAvailable(): Boolean {
+        val qemuImg = File(rootfsDir, "usr/bin/qemu-img")
+        return qemuImg.exists()
+    }
+
     private fun extractAsset(assetName: String, targetFile: File) {
         context.assets.open(assetName).use { input ->
             FileOutputStream(targetFile).use { output ->
@@ -180,7 +219,7 @@ class ProotLauncher(private val context: Context) {
 
     private fun extractTarball(tarball: File, targetDir: File) {
         val process = ProcessBuilder(
-            "tar", "xzf", tarball.absolutePath, "-C", targetDir.absolutePath
+            "tar", "xf", tarball.absolutePath, "-C", targetDir.absolutePath
         ).redirectErrorStream(true).start()
 
         val exitCode = process.waitFor()
@@ -203,4 +242,46 @@ class ProotLauncher(private val context: Context) {
             resolvConf.writeText("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
         }
     }
+
+    /**
+     * Install qemu-img into the Alpine rootfs via apk.
+     * This is needed to create qcow2 disk images for VMs.
+     */
+    private fun installQemuImg() {
+        if (isQemuImgAvailable()) {
+            Log.d(TAG, "qemu-img already installed")
+            return
+        }
+
+        try {
+            // Use proot to run apk add inside the rootfs
+            val prootCmd = buildProotCommand(
+                listOf("apk", "add", "--no-cache", "qemu-img")
+            )
+            val process = ProcessBuilder(prootCmd)
+                .redirectErrorStream(true)
+                .start()
+
+            val output = process.inputStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                Log.d(TAG, "qemu-img installed successfully")
+            } else {
+                Log.w(TAG, "Failed to install qemu-img (exit=$exitCode): $output")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to install qemu-img: ${e.message}")
+        }
+    }
+
+    /**
+     * Result of running a command inside proot.
+     */
+    data class ProotResult(
+        val success: Boolean,
+        val stdout: String,
+        val stderr: String,
+        val exitCode: Int
+    )
 }

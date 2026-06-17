@@ -56,7 +56,10 @@ data class VmConfig(
     val adbHostPort: Int = 5555,
 
     @SerializedName("guest_boot_args")
-    val guestBootArgs: String = "console=ttyAMA0 androidboot.hardware=cuttlefish androidboot.selinux=permissive"
+    val guestBootArgs: String = "console=ttyAMA0 androidboot.hardware=cuttlefish androidboot.selinux=permissive",
+
+    @SerializedName("image_version")
+    val imageVersion: String = ""
 ) {
     companion object {
         private val gson = Gson()
