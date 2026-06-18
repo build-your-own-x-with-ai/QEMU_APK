@@ -50,8 +50,8 @@ cd "$KERNEL_SRC"
 
 echo "=== Configuring kernel ==="
 
-# Start with virt machine defconfig
-make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" virt_defconfig
+# Start with multi_v7_defconfig (multiplatform ARMv7 with virtio/PCI/DRM)
+make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" multi_v7_defconfig
 
 # Enable Android-specific options
 cat >> .config << 'EOF'

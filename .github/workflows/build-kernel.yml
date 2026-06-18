@@ -36,8 +36,8 @@ jobs:
       - name: Apply config
         working-directory: kernel
         run: |
-          # Start with virt_defconfig as base
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- virt_defconfig
+          # Start with multi_v7_defconfig (multiplatform ARMv7 with virtio/PCI/DRM)
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig
 
           # Append Android-specific configs
           cat >> .config << 'EOF'
