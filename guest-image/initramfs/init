@@ -1,0 +1,54 @@
+#!/bin/sh
+# Init for QEMU ARM32 with virtio
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+# Create essential device nodes
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+
+# Wait for virtio block devices to appear
+sleep 2
+
+# Set up networking
+echo "Setting up network..."
+ifconfig lo 127.0.0.1 up
+ifconfig eth0 up 2>/dev/null
+udhcpc -i eth0 -t 5 2>/dev/null || true
+
+echo ""
+echo "===================================="
+echo " QEMU ARM32 System Booted"
+echo " Kernel: $(uname -r)"
+echo " Arch: $(uname -m)"
+echo "===================================="
+echo ""
+
+# Try to find and mount root filesystem from virtio-blk
+ROOTDEV=""
+for dev in /dev/vda /dev/vdb /dev/vdc; do
+  if [ -b "$dev" ]; then
+    ROOTDEV="$dev"
+    break
+  fi
+done
+
+if [ -n "$ROOTDEV" ]; then
+  echo "Found block device: $ROOTDEV"
+  mount -t ext4 "$ROOTDEV" /mnt/root 2>/dev/null || \
+  mount -t f2fs "$ROOTDEV" /mnt/root 2>/dev/null || true
+
+  if [ -f /mnt/root/sbin/init ] || [ -d /mnt/root/bin ]; then
+    echo "Switching to real root at /mnt/root..."
+    exec switch_root /mnt/root /sbin/init
+  fi
+  echo "Rootfs at $ROOTDEV (no init found, using initramfs shell)"
+fi
+
+# Drop to interactive shell
+echo "Type 'help' for busybox commands."
+exec /bin/sh

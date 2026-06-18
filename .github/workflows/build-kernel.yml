@@ -21,6 +21,9 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install cross-compiler
         run: |
           sudo apt-get update
@@ -136,7 +139,6 @@ jobs:
           mkdir -p initramfs/{bin,sbin,dev,etc,lib,mnt/root,proc,sys,usr/bin,usr/sbin,var/tmp,root}
 
           # Download busybox-static for ARM32 from Alpine
-          # The busybox-static package provides a self-contained static binary
           curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/" | \
             grep -oP 'busybox-static-[0-9][^"]*' | head -1 > busybox_pkg.txt
           BUSYBOX_PKG=$(cat busybox_pkg.txt)
@@ -146,92 +148,26 @@ jobs:
 
           # Extract busybox from the .apk (it's a tar archive)
           tar xf busybox.apk -C initramfs/
-          # busybox binary is at initramfs/bin/busybox
           chmod +x initramfs/bin/busybox
 
-          # Create symlinks for all common applets
+          # Create symlinks for common applets
           cd initramfs/bin
-          for applet in sh ash mount umount mkdir cp mv ls cat echo sleep \
-            ifconfig udhcpc ip route switch_root find grep sed awk \
-            chmod chown ln rm rmdir kill ps reboot poweroff hostname \
-            date dmesg clear reset tty wc head tail tee touch; do
+          for applet in sh ash mount umount mkdir cp mv ls cat echo sleep ifconfig udhcpc ip route switch_root find grep sed awk chmod chown ln rm rmdir kill ps reboot poweroff hostname date dmesg clear reset tty wc head tail tee touch; do
             ln -sf busybox "$applet" 2>/dev/null || true
           done
           cd ../..
 
-          # Also link sbin utilities
+          # Link sbin utilities
           cd initramfs/sbin
-          for applet in init halt poweroff reboot switch_root mkfs.ext4 \
-            mount umount fdisk mdev; do
+          for applet in init halt poweroff reboot switch_root mkfs.ext4 mount umount fdisk mdev; do
             ln -sf ../bin/busybox "$applet" 2>/dev/null || true
           done
           cd ../..
 
-          # Create /init script
-          cat > initramfs/init << 'INITEOF'
-#!/bin/sh
-# Init for QEMU ARM32 with virtio
-
-# Mount essential filesystems
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-
-# Create essential device nodes
-mkdir -p /dev/pts /dev/shm
-mount -t devpts devpts /dev/pts
-mount -t tmpfs tmpfs /dev/shm
-
-# Wait for virtio block devices to appear
-sleep 2
-
-# Set up networking
-echo "Setting up network..."
-ifconfig lo 127.0.0.1 up
-ifconfig eth0 up 2>/dev/null
-udhcpc -i eth0 -t 5 2>/dev/null || true
-
-echo ""
-echo "===================================="
-echo " QEMU ARM32 System Booted"
-echo " Kernel: $(uname -r)"
-echo " Arch: $(uname -m)"
-echo "===================================="
-echo ""
-
-# Try to find and mount root filesystem from virtio-blk
-ROOTDEV=""
-for dev in /dev/vda /dev/vdb /dev/vdc; do
-  if [ -b "$dev" ]; then
-    ROOTDEV="$dev"
-    break
-  fi
-done
-
-if [ -n "$ROOTDEV" ]; then
-  echo "Found block device: $ROOTDEV"
-  mount -t ext4 "$ROOTDEV" /mnt/root 2>/dev/null || \
-  mount -t f2fs "$ROOTDEV" /mnt/root 2>/dev/null || true
-
-  if [ -f /mnt/root/sbin/init ] || [ -d /mnt/root/bin ]; then
-    echo "Switching to real root at /mnt/root..."
-    exec switch_root /mnt/root /sbin/init
-  fi
-  echo "Rootfs at $ROOTDEV (no init found, using initramfs shell)"
-fi
-
-# Drop to interactive shell
-echo "Type 'help' for busybox commands."
-exec /bin/sh
-INITEOF
+          # Copy init script and fstab from repo
+          cp guest-image/initramfs/init initramfs/init
           chmod +x initramfs/init
-
-          # Create /etc/fstab
-          cat > initramfs/etc/fstab << 'FSTABEOF'
-proc     /proc  proc     defaults  0  0
-sysfs    /sys   sysfs    defaults  0  0
-devtmpfs /dev   devtmpfs defaults  0  0
-FSTABEOF
+          printf 'proc     /proc  proc     defaults  0  0\nsysfs    /sys   sysfs    defaults  0  0\ndevtmpfs /dev   devtmpfs defaults  0  0\n' > initramfs/etc/fstab
 
           # Pack initramfs
           cd initramfs && find . | cpio -H newc -o 2>/dev/null | gzip -9 > ../initrd
