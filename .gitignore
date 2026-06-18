@@ -18,12 +18,8 @@ local.properties
 *.ap_
 *.dex
 
-# Guest images (large binary files)
-*.img
+# Guest disk images (large binary files, created at runtime)
 *.qcow2
-*.zImage
-*.dtb
-app/src/main/assets/guest/
 
 # QEMU build artifacts
 qemu-build/output/

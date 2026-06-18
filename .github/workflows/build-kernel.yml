@@ -133,87 +133,111 @@ jobs:
       - name: Build initramfs
         run: |
           # Create initramfs directory structure
-          mkdir -p initramfs/{bin,dev,etc,lib,mnt,proc,sys,usr/bin,usr/sbin,var/tmp,root}
+          mkdir -p initramfs/{bin,sbin,dev,etc,lib,mnt/root,proc,sys,usr/bin,usr/sbin,var/tmp,root}
 
-          # Download static busybox for ARM
-          BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
-          # Use Alpine's ARM busybox instead
-          curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/busybox-1.36.1-r29.apk" \
-            -o busybox.apk || true
+          # Download busybox-static for ARM32 from Alpine
+          # The busybox-static package provides a self-contained static binary
+          curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/" | \
+            grep -oP 'busybox-static-[0-9][^"]*' | head -1 > busybox_pkg.txt
+          BUSYBOX_PKG=$(cat busybox_pkg.txt)
+          echo "Downloading: $BUSYBOX_PKG"
+          curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/$BUSYBOX_PKG" \
+            -o busybox.apk
 
-          # If download fails, create a minimal init script
-          # Create /init script
-          cat > initramfs/init << 'INIT'
-          #!/bin/sh
-          # Minimal init for QEMU ARM32 with virtio
+          # Extract busybox from the .apk (it's a tar archive)
+          tar xf busybox.apk -C initramfs/
+          # busybox binary is at initramfs/bin/busybox
+          chmod +x initramfs/bin/busybox
 
-          # Mount essential filesystems
-          mount -t proc proc /proc
-          mount -t sysfs sysfs /sys
-          mount -t devtmpfs devtmpfs /dev
-
-          # Create essential device nodes
-          mkdir -p /dev/pts /dev/shm
-          mount -t devpts devpts /dev/pts
-          mount -t tmpfs tmpfs /dev/shm
-
-          # Wait for virtio block devices
-          sleep 2
-
-          # Find and mount root filesystem from virtio-blk device
-          # The userdata qcow2 image is mounted as a virtio block device
-          ROOTDEV=""
-          for dev in /dev/vda /dev/vdb /dev/vdc /dev/mmcblk0; do
-            if [ -b "$dev" ]; then
-              ROOTDEV="$dev"
-              break
-            fi
+          # Create symlinks for all common applets
+          cd initramfs/bin
+          for applet in sh ash mount umount mkdir cp mv ls cat echo sleep \
+            ifconfig udhcpc ip route switch_root find grep sed awk \
+            chmod chown ln rm rmdir kill ps reboot poweroff hostname \
+            date dmesg clear reset tty wc head tail tee touch; do
+            ln -sf busybox "$applet" 2>/dev/null || true
           done
+          cd ../..
 
-          if [ -n "$ROOTDEV" ]; then
-            echo "Found root device: $ROOTDEV"
-            mkdir -p /mnt/root
-            mount -t ext4 "$ROOTDEV" /mnt/root 2>/dev/null || \
-            mount -t f2fs "$ROOTDEV" /mnt/root 2>/dev/null || true
+          # Also link sbin utilities
+          cd initramfs/sbin
+          for applet in init halt poweroff reboot switch_root mkfs.ext4 \
+            mount umount fdisk mdev; do
+            ln -sf ../bin/busybox "$applet" 2>/dev/null || true
+          done
+          cd ../..
 
-            if [ -f /mnt/root/sbin/init ] || [ -f /mnt/root/bin/init ]; then
-              echo "Switching to real root..."
-              exec switch_root /mnt/root /sbin/init
-            fi
+          # Create /init script
+          cat > initramfs/init << 'INITEOF'
+#!/bin/sh
+# Init for QEMU ARM32 with virtio
 
-            # If no real init found, drop to shell in the mounted root
-            echo "=== Alpine ARM32 System Ready ==="
-            echo "Root mounted at /mnt/root"
-          fi
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
 
-          # Start a shell for debugging
-          echo "=== QEMU ARM32 System Booted ==="
-          echo "Kernel: $(uname -r)"
-          echo "Architecture: $(uname -m)"
+# Create essential device nodes
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
 
-          # Set up networking
-          if [ -x /bin/ifconfig ] || [ -x /sbin/ifconfig ]; then
-            ifconfig eth0 up 2>/dev/null
-            udhcpc -i eth0 2>/dev/null || true
-          fi
+# Wait for virtio block devices to appear
+sleep 2
 
-          # Drop to shell
-          exec /bin/sh
-          INIT
+# Set up networking
+echo "Setting up network..."
+ifconfig lo 127.0.0.1 up
+ifconfig eth0 up 2>/dev/null
+udhcpc -i eth0 -t 5 2>/dev/null || true
+
+echo ""
+echo "===================================="
+echo " QEMU ARM32 System Booted"
+echo " Kernel: $(uname -r)"
+echo " Arch: $(uname -m)"
+echo "===================================="
+echo ""
+
+# Try to find and mount root filesystem from virtio-blk
+ROOTDEV=""
+for dev in /dev/vda /dev/vdb /dev/vdc; do
+  if [ -b "$dev" ]; then
+    ROOTDEV="$dev"
+    break
+  fi
+done
+
+if [ -n "$ROOTDEV" ]; then
+  echo "Found block device: $ROOTDEV"
+  mount -t ext4 "$ROOTDEV" /mnt/root 2>/dev/null || \
+  mount -t f2fs "$ROOTDEV" /mnt/root 2>/dev/null || true
+
+  if [ -f /mnt/root/sbin/init ] || [ -d /mnt/root/bin ]; then
+    echo "Switching to real root at /mnt/root..."
+    exec switch_root /mnt/root /sbin/init
+  fi
+  echo "Rootfs at $ROOTDEV (no init found, using initramfs shell)"
+fi
+
+# Drop to interactive shell
+echo "Type 'help' for busybox commands."
+exec /bin/sh
+INITEOF
           chmod +x initramfs/init
 
-          # Create symlinks for basic utilities (busybox will provide these)
-          cat > initramfs/etc/fstab << 'FSTAB'
-          # <device>  <mount>  <type>  <options>  <dump>  <pass>
-          proc        /proc    proc    defaults   0       0
-          sysfs       /sys     sysfs   defaults   0       0
-          devtmpfs    /dev     devtmpfs defaults  0       0
-          FSTAB
+          # Create /etc/fstab
+          cat > initramfs/etc/fstab << 'FSTABEOF'
+proc     /proc  proc     defaults  0  0
+sysfs    /sys   sysfs    defaults  0  0
+devtmpfs /dev   devtmpfs defaults  0  0
+FSTABEOF
 
-          # Create cpio archive
-          cd initramfs && find . | cpio -H newc -o | gzip -9 > ../initrd
+          # Pack initramfs
+          cd initramfs && find . | cpio -H newc -o 2>/dev/null | gzip -9 > ../initrd
           cd ..
           ls -lh initrd
+          echo "Initramfs size: $(du -sh initrd | cut -f1)"
 
       - name: Verify artifacts
         run: |

@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -25,17 +24,14 @@ class GuestImageManager(private val context: Context) {
     companion object {
         private const val TAG = "GuestImageManager"
         private const val IMAGES_DIR = "images"
-        private const val MANIFEST_FILE = "manifest.json"
 
-        /** Default image set — Alpine ARM32 + kernel from GitHub Releases */
-        private const val DEFAULT_KERNEL_RELEASE_URL =
-            "https://github.com/YOUR_REPO/QEMU_APK/releases/latest/download"
+        /** Asset paths for bundled kernel images */
+        private const val ASSET_ZIMAGE = "guest/zImage"
+        private const val ASSET_INITRD = "guest/initrd"
 
         /** Alpine ARM32 minirootfs — direct from Alpine CDN */
         private const val ALPINE_ARM32_URL =
             "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/armhf/alpine-minirootfs-3.20.3-armhf.tar.gz"
-
-        private const val ALPINE_ARM32_SIZE = 3_200_000L // ~3.2 MB compressed
     }
 
     private val imagesDir: File = File(context.filesDir, IMAGES_DIR).also { it.mkdirs() }
@@ -44,14 +40,38 @@ class GuestImageManager(private val context: Context) {
 
     /**
      * Check if all required guest images are present and valid.
+     * Kernel and initrd come from bundled assets; Alpine rootfs is downloaded.
      */
     fun areImagesReady(): Boolean {
         val kernel = File(imagesDir, "zImage")
         val initrd = File(imagesDir, "initrd")
-        val rootfs = File(imagesDir, "alpine-arm32.tar.gz")
-        return kernel.exists() && kernel.length() > 0 &&
-               initrd.exists() && initrd.length() > 0 &&
-               rootfs.exists() && rootfs.length() > 0
+        return kernel.exists() && kernel.length() > 100_000 &&
+               initrd.exists() && initrd.length() > 0
+    }
+
+    /**
+     * Extract bundled kernel images from APK assets.
+     * Called automatically during setup — no download needed for zImage/initrd.
+     */
+    suspend fun extractBundledImages() = withContext(Dispatchers.IO) {
+        val zImageFile = File(imagesDir, "zImage")
+        val initrdFile = File(imagesDir, "initrd")
+
+        if (!zImageFile.exists() || zImageFile.length() < 100_000) {
+            Log.d(TAG, "Extracting bundled zImage from assets")
+            context.assets.open(ASSET_ZIMAGE).use { input ->
+                FileOutputStream(zImageFile).use { output -> input.copyTo(output) }
+            }
+            Log.d(TAG, "zImage extracted: ${zImageFile.length()} bytes")
+        }
+
+        if (!initrdFile.exists() || initrdFile.length() == 0L) {
+            Log.d(TAG, "Extracting bundled initrd from assets")
+            context.assets.open(ASSET_INITRD).use { input ->
+                FileOutputStream(initrdFile).use { output -> input.copyTo(output) }
+            }
+            Log.d(TAG, "initrd extracted: ${initrdFile.length()} bytes")
+        }
     }
 
     /**
@@ -62,8 +82,8 @@ class GuestImageManager(private val context: Context) {
 
         val requiredImages = listOf(
             "zImage" to 5_000_000L,     // ~5-12 MB kernel
-            "initrd" to 1_000_000L,     // ~1-4 MB initramfs
-            "alpine-arm32.tar.gz" to ALPINE_ARM32_SIZE
+            "initrd" to 100L,           // initramfs (any size > 0)
+            "alpine-arm32.tar.gz" to 100_000L  // Alpine rootfs
         )
 
         for ((name, minSize) in requiredImages) {
@@ -88,55 +108,44 @@ class GuestImageManager(private val context: Context) {
     }
 
     /**
-     * Download all required guest images.
-     *
-     * @param kernelReleaseUrl Base URL for kernel/initrd (GitHub Releases)
-     * @param onProgress Callback: (percentOverall, currentFileName, bytesDownloaded, bytesTotal)
+     * Download Alpine ARM32 rootfs (the only image not bundled in APK).
+     * zImage and initrd are extracted from assets via extractBundledImages().
      */
     suspend fun downloadAllImages(
-        kernelReleaseUrl: String = DEFAULT_KERNEL_RELEASE_URL,
+        kernelReleaseUrl: String = "",
         onProgress: (Int, String, Long, Long) -> Unit = { _, _, _, _ -> }
     ) = withContext(Dispatchers.IO) {
-        val downloads = listOf(
-            DownloadItem("zImage", "$kernelReleaseUrl/zImage", null),
-            DownloadItem("initrd", "$kernelReleaseUrl/initrd", null),
-            DownloadItem("alpine-arm32.tar.gz", ALPINE_ARM32_URL, null)
-        )
+        // First extract bundled kernel images
+        extractBundledImages()
+        onProgress(33, "zImage + initrd (bundled)", 1, 1)
 
-        val totalFiles = downloads.size
-        for ((index, item) in downloads.withIndex()) {
-            val targetFile = File(imagesDir, item.name)
-
-            // Skip if already downloaded and valid
-            if (targetFile.exists() && targetFile.length() > 1000) {
-                Log.d(TAG, "Skipping ${item.name} — already exists (${targetFile.length()} bytes)")
-                val overallPercent = ((index + 1) * 100) / totalFiles
-                onProgress(overallPercent, item.name, targetFile.length(), targetFile.length())
-                continue
-            }
-
-            onProgress((index * 100) / totalFiles, item.name, 0L, 0L)
-
-            try {
-                downloadFile(
-                    url = item.url,
-                    targetFile = targetFile,
-                    expectedSha256 = item.sha256
-                ) { bytesDownloaded, bytesTotal ->
-                    val filePercent = if (bytesTotal > 0) {
-                        (bytesDownloaded * 100 / bytesTotal).toInt()
-                    } else 0
-                    val overallPercent = ((index * 100) + filePercent) / totalFiles
-                    onProgress(overallPercent, item.name, bytesDownloaded, bytesTotal)
-                }
-                Log.d(TAG, "Downloaded ${item.name}: ${targetFile.length()} bytes")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to download ${item.name}", e)
-                throw IOException("Failed to download ${item.name}: ${e.message}", e)
-            }
+        // Download Alpine ARM32 rootfs
+        val rootfsFile = File(imagesDir, "alpine-arm32.tar.gz")
+        if (rootfsFile.exists() && rootfsFile.length() > 100_000) {
+            Log.d(TAG, "Alpine rootfs already exists: ${rootfsFile.length()} bytes")
+            onProgress(100, "alpine-arm32.tar.gz (cached)", rootfsFile.length(), rootfsFile.length())
+            return@withContext
         }
 
-        Log.d(TAG, "All images downloaded successfully")
+        onProgress(50, "alpine-arm32.tar.gz", 0L, 0L)
+        try {
+            downloadFile(
+                url = ALPINE_ARM32_URL,
+                targetFile = rootfsFile,
+                expectedSha256 = null
+            ) { bytesDownloaded, bytesTotal ->
+                val filePercent = if (bytesTotal > 0) (bytesDownloaded * 100 / bytesTotal).toInt() else 0
+                val overallPercent = 50 + (filePercent / 2)
+                onProgress(overallPercent, "alpine-arm32.tar.gz", bytesDownloaded, bytesTotal)
+            }
+            Log.d(TAG, "Alpine ARM32 rootfs downloaded: ${rootfsFile.length()} bytes")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to download Alpine rootfs", e)
+            throw IOException("Failed to download Alpine ARM32 rootfs: ${e.message}", e)
+        }
+
+        onProgress(100, "Done", 1, 1)
+        Log.d(TAG, "All images ready")
     }
 
     /**
@@ -144,10 +153,8 @@ class GuestImageManager(private val context: Context) {
      */
     fun deleteAllImages() {
         imagesDir.listFiles()?.forEach { file ->
-            if (file.name != MANIFEST_FILE) {
-                file.delete()
-                Log.d(TAG, "Deleted image: ${file.name}")
-            }
+            file.delete()
+            Log.d(TAG, "Deleted image: ${file.name}")
         }
     }
 
@@ -245,12 +252,6 @@ class GuestImageManager(private val context: Context) {
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-
-    data class DownloadItem(
-        val name: String,
-        val url: String,
-        val sha256: String?
-    )
 
     data class ImageStatus(
         val name: String,

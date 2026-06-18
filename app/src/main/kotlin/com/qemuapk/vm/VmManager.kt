@@ -62,11 +62,17 @@ class VmManager(private val context: Context) {
 
     /**
      * Set up the proot environment (first-time or after update).
+     * Also extracts bundled kernel images from assets.
      */
     suspend fun setupEnvironment(onProgress: (Int, String) -> Unit) {
         try {
             prootLauncher.setupEnvironment(onProgress)
             _isSetupComplete.value = true
+
+            // Extract bundled kernel images (zImage, initrd) from assets
+            onProgress(95, "Extracting kernel images...")
+            guestImageManager.extractBundledImages()
+            _imagesReady.value = guestImageManager.areImagesReady()
         } catch (e: Exception) {
             Log.e(TAG, "Setup failed", e)
             throw e
