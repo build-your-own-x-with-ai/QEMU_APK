@@ -146,9 +146,12 @@ jobs:
           curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/armhf/$BUSYBOX_PKG" \
             -o busybox.apk
 
-          # Extract busybox from the .apk (it's a tar archive)
-          tar xf busybox.apk -C initramfs/
+          # Extract busybox from .apk (concatenated gzip streams)
+          # APK = sig.tgz + control.tgz + data.tgz; use repo script to parse
+          python3 guest-image/scripts/extract_apk.py busybox.apk initramfs/bin/busybox
+          rm -f busybox.apk
           chmod +x initramfs/bin/busybox
+          ls -lh initramfs/bin/busybox
 
           # Create symlinks for common applets
           cd initramfs/bin
